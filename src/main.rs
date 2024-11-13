@@ -1,15 +1,7 @@
-use teloxide::types::{MessageKind, Rgb};
-use teloxide::{prelude::*, utils::command::BotCommands};
-
-#[tokio::main]
-async fn main() {
-    pretty_env_logger::init();
-    log::info!("Starting command bot...");
-
-    let bot = Bot::from_env();
-
-    Command::repl(bot, answer).await;
-}
+use teloxide::dispatching::UpdateFilterExt;
+use teloxide::prelude::*;
+use teloxide::types::{ParseMode, Rgb};
+use teloxide::utils::command::BotCommands;
 
 #[derive(BotCommands, Clone)]
 #[command(
@@ -19,45 +11,70 @@ async fn main() {
 enum Command {
     #[command(description = "display this text.")]
     Help,
-    #[command(description = "handle a username.")]
-    Username(String),
-    #[command(description = "handle a username and an age.", parse_with = "split")]
-    UsernameAndAge { username: String, age: u8 },
+    Create,
 }
 
-async fn answer(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> {
+async fn handle_commands(
+    bot: Bot,
+    msg: Message,
+    cmd: Command,
+) -> Result<(), teloxide::RequestError> {
     match cmd {
         Command::Help => {
-            bot.create_forum_topic(ChatId(-1002337455276), "Lux", Rgb::from_u32(253), ":dice:")
-                .await?;
-            match msg.kind {
-                MessageKind::Common(mess) => match mess.reply_to_message {
-                    None => {
-                        println!("NO")
-                    }
-                    Some(forum) => {
-                        println!("{:?}", forum.kind)
-                    }
-                },
-                other => {
-                    println!("{other:?}")
-                }
-            }
-            bot.send_message(msg.chat.id, Command::descriptions().to_string())
-                .await?
-        }
-        Command::Username(username) => {
-            bot.send_message(msg.chat.id, format!("Your username is @{username}."))
-                .await?
-        }
-        Command::UsernameAndAge { username, age } => {
+            println!("{:#?}", msg);
             bot.send_message(
                 msg.chat.id,
-                format!("Your username is @{username} and age is {age}."),
+                "Questo è un bot di esempio. Usa /help per questa descrizione.",
             )
-            .await?
+            .await?;
         }
-    };
-
+        Command::Create => {
+            bot.create_forum_topic(
+                ChatId(-1002337455276),
+                "Titolo",
+                Rgb::from_u32(251),
+                "Testo",
+            )
+            .await?;
+        }
+    }
     Ok(())
+}
+
+async fn handle_messages(bot: Bot, msg: Message) -> Result<(), teloxide::RequestError> {
+    println!("Id\n{:#?}", msg.id);
+    println!("From\n{:#?}", msg.from);
+    println!("Kind\n{:#?}", msg.kind);
+    println!("Chat\n{:#?}", msg.chat);
+
+    // if let ForumTopicCreated(_) = msg.kind {
+    //     bot.send_message(ChatId(-1002337455276), "Forum topic created")
+    //         .reply_to(MessageId(97))
+    //         .await?;
+    // }
+    if let Some(text) = msg.text() {
+        bot.send_message(ChatId(698410803), text)
+            .parse_mode(ParseMode::Html)
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    let bot = Bot::from_env();
+
+    let handler = Update::filter_message()
+        .branch(
+            dptree::entry()
+                .filter_command::<Command>()
+                .endpoint(handle_commands),
+        )
+        .branch(dptree::entry().endpoint(handle_messages));
+
+    Dispatcher::builder(bot, handler)
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
 }
