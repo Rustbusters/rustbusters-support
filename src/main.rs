@@ -1,11 +1,29 @@
+mod util;
+
+use crate::util::{get_random_topic_color, get_user_name};
+use dotenv::dotenv;
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use teloxide::dispatching::UpdateFilterExt;
 use teloxide::prelude::*;
 use teloxide::sugar::request::RequestReplyExt;
-use teloxide::types::{MessageId, MessageKind, ParseMode, Rgb};
+use teloxide::types::{MessageId, MessageKind};
 use teloxide::utils::command::BotCommands;
 use tokio::sync::Mutex;
+
+pub fn support_group_id() -> ChatId {
+    static SUPPORT_GROUP: OnceLock<ChatId> = OnceLock::new();
+    *SUPPORT_GROUP.get_or_init(|| {
+        ChatId(
+            env::var("SUPPORT_GROUP")
+                .expect("SUPPORT_GROUP must be set.")
+                .parse()
+                .unwrap(),
+        )
+    })
+}
 
 // Struttura per memorizzare i binding tra chat private e message_id del topic
 #[derive(Clone)]
@@ -26,18 +44,12 @@ impl StateContainer {
 }
 
 #[derive(BotCommands, Clone)]
-#[command(
-    rename_rule = "lowercase",
-    description = "These commands are supported:"
-)]
+#[command(rename_rule = "lowercase")]
 enum Command {
-    #[command(description = "display this text.")]
-    Help,
-    #[command(description = "create a support ticket")]
+    GetId,
     Support,
+    Close,
 }
-
-const FORUM_CHAT_ID: ChatId = ChatId(-1002337455276);
 
 async fn handle_commands(
     bot: Bot,
@@ -46,12 +58,9 @@ async fn handle_commands(
     state: Arc<StateContainer>,
 ) -> Result<(), teloxide::RequestError> {
     match cmd {
-        Command::Help => {
-            bot.send_message(
-                msg.chat.id,
-                "Use /support to create a support ticket. All messages will be forwarded to support staff.",
-            )
-              .await?;
+        Command::GetId => {
+            bot.send_message(msg.chat.id, msg.chat.id.0.to_string())
+                .await?;
         }
         Command::Support => {
             // Verifica che il comando sia stato inviato in chat privata
@@ -62,7 +71,7 @@ async fn handle_commands(
             }
 
             let user_id = msg.chat.id;
-            let topic_name = format!("Bot-{}", user_id.0);
+            let topic_name = format!("Support-{}", get_user_name(&msg.from.clone().unwrap()));
 
             // Salva l'utente che ha richiesto il topic
             let mut pending_chat = state.pending_chat.lock().await;
@@ -70,12 +79,51 @@ async fn handle_commands(
 
             // Crea un nuovo topic nel forum
             bot.create_forum_topic(
-                FORUM_CHAT_ID,
-                &topic_name,
-                Rgb::from_u32(251),
+                support_group_id(),
+                &(topic_name),
+                get_random_topic_color(),
                 "New support ticket",
             )
             .await?;
+        }
+        Command::Close => {
+            let mut bindings = state.bindings.lock().await;
+            if let Some(&topic_msg_id) = bindings.get(&msg.chat.id) {
+                // Chiudi il topic rispondendo al messaggio che l'ha creato
+                bot.send_message(
+                    support_group_id(),
+                    format!(
+                        "Chat ended by the user {}",
+                        get_user_name(&msg.from.clone().unwrap())
+                    ),
+                )
+                .reply_to(topic_msg_id)
+                .await?;
+                // Invia un messaggio di avviso nella chat privata
+                bot.send_message(msg.chat.id, "The support topic has been closed.")
+                    .await?;
+
+                // Rimuovi il binding
+                bindings.remove(&msg.chat.id);
+            } else if msg.chat.id == support_group_id() {
+                // Cerca il topic a cui il messaggio sta rispondendo
+                if let Some(reply_to) = msg.reply_to_message() {
+                    if let Some((&private_chat_id, _)) =
+                        bindings.iter().find(|(_, &msg_id)| msg_id == reply_to.id)
+                    {
+                        // Chiudi il topic rispondendo al messaggio che l'ha creato
+                        bot.send_message(support_group_id(), "Chat ended")
+                            .reply_to(reply_to.id)
+                            .await?;
+                        // Invia un messaggio di avviso nella chat privata
+                        bot.send_message(private_chat_id, "RustBusters closed the support chat. Write /support to open a new one.")
+                            .await?;
+                    }
+                }
+
+                // Rimuovi il binding
+                bindings.retain(|_, &mut msg_id| msg_id != msg.id);
+            }
         }
     }
     Ok(())
@@ -103,7 +151,7 @@ async fn handle_messages(
                     // Notifica l'utente
                     bot.send_message(
                         chat_id,
-                        "Support ticket created! You can now write your messages here.",
+                        "Support ticket created! You can now chat with RustBusters through this bot. To close the chat, use /close.",
                     )
                     .await?;
                 }
@@ -120,16 +168,15 @@ async fn handle_messages(
             if let Some(&topic_msg_id) = bindings.get(&msg.chat.id) {
                 if let Some(text) = msg.text() {
                     // Inoltra il messaggio al topic rispondendo al messaggio che l'ha creato
-                    bot.send_message(FORUM_CHAT_ID, text)
+                    bot.send_message(support_group_id(), text)
                         .reply_to(topic_msg_id)
-                        .parse_mode(ParseMode::MarkdownV2)
                         .await?;
                 }
             }
         }
         // Gestione messaggi nel forum
         teloxide::types::ChatKind::Public(_) => {
-            if msg.chat.id == FORUM_CHAT_ID {
+            if msg.chat.id == support_group_id() {
                 // Se il messaggio è una risposta ad un topic che abbiamo tracciato
                 if let Some(reply_to) = msg.reply_to_message() {
                     if let Some((&private_chat_id, _)) =
@@ -137,9 +184,7 @@ async fn handle_messages(
                     {
                         if let Some(text) = msg.text() {
                             // Inoltra il messaggio alla chat privata
-                            bot.send_message(private_chat_id, text)
-                                .parse_mode(ParseMode::MarkdownV2)
-                                .await?;
+                            bot.send_message(private_chat_id, text).await?;
                         }
                     }
                 }
@@ -152,6 +197,8 @@ async fn handle_messages(
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
+
     let bot = Bot::from_env();
 
     // Crea una nuova istanza di StateContainer
