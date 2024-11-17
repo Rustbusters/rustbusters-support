@@ -1,4 +1,3 @@
-// state.rs
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
@@ -21,6 +20,24 @@ impl Language {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum TicketType {
+    Bug,
+    HowTo,
+    Other,
+}
+
+impl TicketType {
+    pub fn to_string(&self) -> String {
+        match self {
+            TicketType::Bug => "Bug",
+            TicketType::HowTo => "How to ...",
+            TicketType::Other => "Other",
+        }
+        .to_string()
+    }
+}
+
 /// Global support group chat ID
 pub fn support_group_id() -> ChatId {
     static SUPPORT_GROUP: OnceLock<ChatId> = OnceLock::new();
@@ -39,8 +56,8 @@ pub fn support_group_id() -> ChatId {
 pub struct StateContainer {
     /// Maps private ChatId to topic MessageId
     pub bindings: Arc<Mutex<HashMap<ChatId, MessageId>>>,
-    /// Stores the ChatId and selected language of the user who requested the last topic
-    pub pending_chat: Arc<Mutex<Option<(ChatId, Language)>>>,
+    /// Stores the ChatId, selected language and ticket type of the user who requested the last topic
+    pub pending_chat: Arc<Mutex<Option<(ChatId, Language, Option<TicketType>)>>>,
 }
 
 impl StateContainer {

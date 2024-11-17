@@ -1,9 +1,10 @@
 // handlers.rs
 use crate::commands::Command;
-use crate::state::{support_group_id, Language, StateContainer};
+use crate::state::{support_group_id, Language, StateContainer, TicketType};
 use crate::util::{get_random_topic_color, get_user_name};
 use std::sync::Arc;
 use teloxide::sugar::request::RequestReplyExt;
+use teloxide::types::ParseMode;
 use teloxide::{
     prelude::*,
     types::{ChatKind, InlineKeyboardButton, InlineKeyboardMarkup, MessageKind},
@@ -18,6 +19,33 @@ fn create_language_keyboard() -> InlineKeyboardMarkup {
         InlineKeyboardButton::callback("🇮🇹 Italiano", CALLBACK_ITALIAN),
         InlineKeyboardButton::callback("🇬🇧 English", CALLBACK_ENGLISH),
     ]])
+}
+
+const CALLBACK_BUG: &str = "ticket_bug";
+const CALLBACK_HOW_TO: &str = "ticket_how_to";
+const CALLBACK_OTHER: &str = "ticket_other";
+
+fn create_typeofticket_keyboard(lang: Language) -> (String, InlineKeyboardMarkup) {
+    let (message, buttons) = match lang {
+        Language::Italian => (
+            "Che tipo di supporto ti serve?".to_string(),
+            vec![
+                InlineKeyboardButton::callback("Segnalazione Bug", CALLBACK_BUG),
+                InlineKeyboardButton::callback("Come fare...", CALLBACK_HOW_TO),
+                InlineKeyboardButton::callback("Altro", CALLBACK_OTHER),
+            ],
+        ),
+        Language::English => (
+            "What kind of support do you need?".to_string(),
+            vec![
+                InlineKeyboardButton::callback("Bug Report", CALLBACK_BUG),
+                InlineKeyboardButton::callback("How to...", CALLBACK_HOW_TO),
+                InlineKeyboardButton::callback("Other", CALLBACK_OTHER),
+            ],
+        ),
+    };
+
+    (message, InlineKeyboardMarkup::new(vec![buttons]))
 }
 
 /// Handles bot commands
@@ -117,7 +145,7 @@ pub async fn handle_messages(
         if let Some(from) = &msg.from {
             if from.is_bot {
                 let mut pending_chat = state.pending_chat.lock().await;
-                if let Some((chat_id, language)) = *pending_chat {
+                if let Some((chat_id, language, Some(ticket_type))) = *pending_chat {
                     // Save the binding
                     let mut bindings = state.bindings.lock().await;
                     bindings.insert(chat_id, msg.id);
@@ -125,12 +153,20 @@ pub async fn handle_messages(
                     // Clear pending_chat
                     *pending_chat = None;
 
-                    // Send confirmation message
+                    // Send confirmation message with ticket type
                     let confirmation = match language {
-                        Language::Italian => "Ticket di supporto creato! Puoi ora chattare con RustBusters attraverso questo bot. Per chiudere la chat, usa /close.",
-                        Language::English => "Support ticket created! You can now chat with RustBusters through this bot. To close the chat, use /close.",
+                        Language::Italian => format!(
+                            "Ticket di supporto creato per *_{}_*\\! Puoi ora chattare con RustBusters attraverso questo bot\\.\nPer chiudere la chat, usa /close\\.",
+                            ticket_type.to_string().replace("...","\\.\\.\\.")
+                        ),
+                        Language::English => format!(
+                            "Support ticket created for *_{}_*\\! You can now chat with RustBusters through this bot\\.\nTo close the chat, use /close\\.",
+                            ticket_type.to_string().replace("...","\\.\\.\\.")
+                        ),
                     };
-                    bot.send_message(chat_id, confirmation).await?;
+                    bot.send_message(chat_id, confirmation)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
                 }
             }
         }
@@ -175,31 +211,67 @@ pub async fn handle_callback_query(
     query: CallbackQuery,
     state: Arc<StateContainer>,
 ) -> Result<(), teloxide::RequestError> {
-    println!("ciao");
-    if let (Some(data), Some(message)) = (&query.data, &query.message) {
-        let language = match data.as_str() {
-            CALLBACK_ITALIAN => Some(Language::Italian),
-            CALLBACK_ENGLISH => Some(Language::English),
-            _ => None,
-        };
+    if let (Some(data), Some(message), from) = (&query.data, &query.message, &query.from) {
+        match data.as_str() {
+            // Handle language selection
+            CALLBACK_ITALIAN | CALLBACK_ENGLISH => {
+                let language = if data.as_str() == CALLBACK_ITALIAN {
+                    Language::Italian
+                } else {
+                    Language::English
+                };
 
-        if let (Some(language), from) = (language, &query.from) {
-            // Store the user and selected language
-            let mut pending_chat = state.pending_chat.lock().await;
-            *pending_chat = Some((message.chat().id, language));
+                // Store the user and selected language
+                let mut pending_chat = state.pending_chat.lock().await;
+                *pending_chat = Some((message.chat().id, language, None));
+                drop(pending_chat);
 
-            // Delete the language selection message
-            bot.delete_message(message.chat().id, message.id()).await?;
+                // Delete the language selection message
+                bot.delete_message(message.chat().id, message.id()).await?;
 
-            // Create the topic with the appropriate language suffix
-            let topic_name = format!("{} • {}", language.to_flag(), get_user_name(from));
-            bot.create_forum_topic(
-                support_group_id(),
-                &topic_name,
-                get_random_topic_color(),
-                "New support ticket",
-            )
-            .await?;
+                // Send ticket type selection
+                let (prompt, keyboard) = create_typeofticket_keyboard(language);
+                bot.send_message(message.chat().id, prompt)
+                    .reply_markup(keyboard)
+                    .await?;
+            }
+
+            // Handle ticket type selection
+            CALLBACK_BUG | CALLBACK_HOW_TO | CALLBACK_OTHER => {
+                let ticket_type = match data.as_str() {
+                    CALLBACK_BUG => TicketType::Bug,
+                    CALLBACK_HOW_TO => TicketType::HowTo,
+                    CALLBACK_OTHER => TicketType::Other,
+                    _ => return Ok(()),
+                };
+
+                let mut pending_chat = state.pending_chat.lock().await;
+                if let Some((chat_id, language, _)) = *pending_chat {
+                    // Update pending chat with ticket type
+                    *pending_chat = Some((chat_id, language, Some(ticket_type)));
+
+                    // Delete the ticket type selection message
+                    bot.delete_message(message.chat().id, message.id()).await?;
+
+                    // Create topic with type in the name
+                    let type_str = ticket_type.to_string();
+                    let topic_name = format!(
+                        "{} {} - {}",
+                        language.to_flag(),
+                        type_str,
+                        get_user_name(from)
+                    );
+
+                    bot.create_forum_topic(
+                        support_group_id(),
+                        &topic_name,
+                        get_random_topic_color(),
+                        "New support ticket",
+                    )
+                    .await?;
+                }
+            }
+            _ => (),
         }
     }
 
