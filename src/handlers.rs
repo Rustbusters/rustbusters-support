@@ -2,6 +2,8 @@
 use crate::commands::Command;
 use crate::state::{support_group_id, Language, StateContainer, TicketType};
 use crate::util::{get_random_topic_color, get_user_name};
+use chrono::Local;
+use colored::Colorize;
 use std::sync::Arc;
 use teloxide::sugar::request::RequestReplyExt;
 use teloxide::types::ParseMode;
@@ -12,13 +14,17 @@ use teloxide::{
 
 const CALLBACK_ITALIAN: &str = "lang_it";
 const CALLBACK_ENGLISH: &str = "lang_en";
+const CALLBACK_CANCEL: &str = "cancel";
 
 /// Creates an inline keyboard for language selection
 fn create_language_keyboard() -> InlineKeyboardMarkup {
-    InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback("🇮🇹 Italiano", CALLBACK_ITALIAN),
-        InlineKeyboardButton::callback("🇬🇧 English", CALLBACK_ENGLISH),
-    ]])
+    InlineKeyboardMarkup::new(vec![
+        vec![
+            InlineKeyboardButton::callback("🇮🇹 Italiano", CALLBACK_ITALIAN),
+            InlineKeyboardButton::callback("🇬🇧 English", CALLBACK_ENGLISH),
+        ],
+        vec![InlineKeyboardButton::callback("Cancel", CALLBACK_CANCEL)],
+    ])
 }
 
 const CALLBACK_BUG: &str = "ticket_bug";
@@ -30,7 +36,7 @@ fn create_typeofticket_keyboard(lang: Language) -> (String, InlineKeyboardMarkup
         Language::Italian => (
             "Che tipo di supporto ti serve?".to_string(),
             vec![
-                InlineKeyboardButton::callback("Segnalazione Bug", CALLBACK_BUG),
+                InlineKeyboardButton::callback("Bug", CALLBACK_BUG),
                 InlineKeyboardButton::callback("Come fare...", CALLBACK_HOW_TO),
                 InlineKeyboardButton::callback("Altro", CALLBACK_OTHER),
             ],
@@ -45,7 +51,13 @@ fn create_typeofticket_keyboard(lang: Language) -> (String, InlineKeyboardMarkup
         ),
     };
 
-    (message, InlineKeyboardMarkup::new(vec![buttons]))
+    (
+        message,
+        InlineKeyboardMarkup::new(vec![
+            buttons,
+            vec![InlineKeyboardButton::callback("Cancel", CALLBACK_CANCEL)],
+        ]),
+    )
 }
 
 /// Handles bot commands
@@ -56,6 +68,13 @@ pub async fn handle_commands(
     state: Arc<StateContainer>,
 ) -> Result<(), teloxide::RequestError> {
     match cmd {
+        Command::Start => {
+            bot.send_message(
+                msg.chat.id,
+                "🤖 Welcome to RustBusters Support Bot! 🛠️\n\nHere are the available commands:\n\n• /support - Open a new support ticket\n  - Choose your language\n  - Select support type\n  - Chat with our group\n\n • /close - Close the current support ticket\n\nHow can we help you today? 😊".to_string(),
+            )
+            .await?;
+        }
         Command::GetId => {
             bot.send_message(msg.chat.id, msg.chat.id.0.to_string())
                 .await?;
@@ -82,6 +101,12 @@ pub async fn handle_commands(
             if pending_chat.is_some() {
                 bot.send_message(msg.chat.id, "Another support request is being processed. Please wait a moment and try again.")
                   .await?;
+                println!(
+                    "{} {} {} tried to open a new ticket while another request is pending",
+                    Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    "[PENDING]".bold().yellow(),
+                    get_user_name(&msg.from.clone().unwrap()).bold().blue()
+                );
                 return Ok(());
             }
             drop(pending_chat);
@@ -94,6 +119,12 @@ pub async fn handle_commands(
             )
             .reply_markup(keyboard)
             .await?;
+            println!(
+                "{} {} {} started a new ticket",
+                Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                "[NEW]".bold().green(),
+                get_user_name(&msg.from.clone().unwrap()).bold().blue()
+            );
         }
         Command::Close => {
             let mut bindings = state.bindings.lock().await;
@@ -113,6 +144,12 @@ pub async fn handle_commands(
                     .await?;
 
                 bindings.remove(&msg.chat.id);
+                println!(
+                    "{} {} {} closed the ticket!",
+                    Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    "[CLOSE]".bold().red(),
+                    get_user_name(&msg.from.clone().unwrap()).bold().yellow()
+                )
             } else if msg.chat.id == support_group_id() {
                 if let Some(reply_to) = msg.reply_to_message() {
                     if let Some((&private_chat_id, _)) =
@@ -123,6 +160,12 @@ pub async fn handle_commands(
                             .await?;
                         bot.send_message(private_chat_id, "RustBusters closed the support chat. Write /support to open a new one.")
                           .await?;
+                        println!(
+                            "{} {} {} closed the ticket!",
+                            Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                            "[CLOSE - RB]".bold().red(),
+                            get_user_name(&msg.from.clone().unwrap()).bold().blue()
+                        )
                     }
                 }
 
@@ -183,6 +226,13 @@ pub async fn handle_messages(
                     bot.send_message(support_group_id(), text)
                         .reply_to(topic_msg_id)
                         .await?;
+                    println!(
+                        "{} {} {} sent a message -> {}",
+                        Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "[MESSAGE]".bold().blue(),
+                        get_user_name(&msg.from.clone().unwrap()).bold().yellow(),
+                        text.italic()
+                    );
                 }
             }
         }
@@ -195,6 +245,13 @@ pub async fn handle_messages(
                     {
                         if let Some(text) = msg.text() {
                             bot.send_message(private_chat_id, text).await?;
+                            println!(
+                                "{} {} {} sent a message -> {}",
+                                Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                                "[MESSAGE - RB]".bold().blue(),
+                                get_user_name(&msg.from.clone().unwrap()).bold().blue(),
+                                text.italic()
+                            );
                         }
                     }
                 }
@@ -269,7 +326,25 @@ pub async fn handle_callback_query(
                         "New support ticket",
                     )
                     .await?;
+                    println!(
+                        "{} {} {} created a new ticket of type {}",
+                        Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "[NEW]".bold().yellow(),
+                        get_user_name(from).bold().blue(),
+                        type_str.bold().cyan()
+                    );
                 }
+            }
+            CALLBACK_CANCEL => {
+                let mut pending_chat = state.pending_chat.lock().await;
+                *pending_chat = None;
+                bot.delete_message(message.chat().id, message.id()).await?;
+                println!(
+                    "{} {} {} cancelled the ticket creation",
+                    Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    "[CANCEL]".bold().red(),
+                    get_user_name(from).bold().blue()
+                );
             }
             _ => (),
         }
