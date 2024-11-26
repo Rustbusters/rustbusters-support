@@ -10,4 +10,4 @@ RUN cargo build --release
 # Usa un volume per salvare i bindings
 VOLUME ["/data"]
 
-CMD ["./target/release/rustbusters-bot"]
+CMD ["./target/release/rustbusters-support"]
