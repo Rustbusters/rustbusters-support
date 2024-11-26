@@ -144,6 +144,13 @@ pub async fn handle_commands(
                     .await?;
 
                 bindings.remove(&msg.chat.id);
+
+                // Salva i bindings dopo la rimozione
+                drop(bindings);
+                if let Err(e) = state.save_bindings().await {
+                    eprintln!("Errore nel salvare i bindings: {}", e);
+                }
+
                 println!(
                     "{} {} {} closed the ticket!",
                     Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -192,6 +199,12 @@ pub async fn handle_messages(
                     // Save the binding
                     let mut bindings = state.bindings.lock().await;
                     bindings.insert(chat_id, msg.id);
+
+                    // Salva i bindings dopo la rimozione
+                    drop(bindings);
+                    if let Err(e) = state.save_bindings().await {
+                        eprintln!("Errore nel salvare i bindings: {}", e);
+                    }
 
                     // Clear pending_chat
                     *pending_chat = None;

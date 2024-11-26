@@ -1,11 +1,14 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::{env, fs};
 use teloxide::types::{ChatId, MessageId};
 use tokio::sync::Mutex;
 
-#[derive(Clone, Copy, PartialEq)]
+// Aggiungi derive per serializzazione/deserializzazione
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Language {
     Italian,
     English,
@@ -60,10 +63,48 @@ pub struct StateContainer {
     pub pending_chat: Arc<Mutex<Option<(ChatId, Language, Option<TicketType>)>>>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct SavedBinding {
+    pub chat_id: i64,
+    pub topic_msg_id: i32,
+}
+
 impl StateContainer {
+    // Nuova funzione per salvare i bindings su file
+    pub async fn save_bindings(&self) -> Result<(), std::io::Error> {
+        let bindings = self.bindings.lock().await;
+        let saved_bindings: Vec<SavedBinding> = bindings
+            .iter()
+            .map(|(&chat_id, &topic_msg_id)| SavedBinding {
+                chat_id: chat_id.0,
+                topic_msg_id: topic_msg_id.0,
+            })
+            .collect();
+
+        let json = serde_json::to_string_pretty(&saved_bindings)?;
+        fs::write("/data/bindings.json", json)
+    }
+
+    // Nuova funzione per caricare i bindings da file
+    pub fn load_bindings() -> HashMap<ChatId, MessageId> {
+        let path = Path::new("/data/bindings.json");
+        if !path.exists() {
+            println!("No bindings file found, starting with an empty state.");
+            return HashMap::new();
+        }
+
+        let json = fs::read_to_string(path).unwrap_or_default();
+        let saved_bindings: Vec<SavedBinding> = serde_json::from_str(&json).unwrap_or_default();
+
+        saved_bindings
+            .into_iter()
+            .map(|b| (ChatId(b.chat_id), MessageId(b.topic_msg_id)))
+            .collect()
+    }
+
     pub fn new() -> Self {
         Self {
-            bindings: Arc::new(Mutex::new(HashMap::new())),
+            bindings: Arc::new(Mutex::new(Self::load_bindings())),
             pending_chat: Arc::new(Mutex::new(None)),
         }
     }
